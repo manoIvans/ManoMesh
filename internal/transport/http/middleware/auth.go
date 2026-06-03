@@ -1,12 +1,14 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/manoIvans/manomesh/internal/auth"
+	"github.com/manoIvans/manomesh/internal/domain"
 )
 
 // ContextUserIDKey é a chave usada no gin.Context para o ID do
@@ -49,4 +51,50 @@ func RequireAuth(tm *auth.TokenManager) gin.HandlerFunc {
 
 func unauthorized(c *gin.Context, msg string) {
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": msg})
+}
+
+// userVerificationLookup é a interface mínima que RequireVerifiedEmail
+// precisa do UserRepository: só "este user tá verificado?". Definir
+// aqui (e não importar a interface inteira do handler) mantém o
+// middleware com dep mínima.
+type userVerificationLookup interface {
+	IsEmailVerified(ctx context.Context, userID int64) (bool, error)
+}
+
+// RequireVerifiedEmail compõe com RequireAuth — exige que o user já
+// tenha confirmado o email. Aplicado seletivamente em endpoints que
+// queremos gatear (ex: POST /assets). Outras rotas autenticadas
+// continuam funcionando sem verificação (login, browse, library).
+//
+// Em falha, 403 com sentinel ErrEmailNotVerified — frontend mostra
+// banner explicando + botão "reenviar verificação".
+func RequireVerifiedEmail(lookup userVerificationLookup) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw, exists := c.Get(ContextUserIDKey)
+		if !exists {
+			// Bug de wiring: middleware aplicado fora do grupo protegido.
+			c.AbortWithStatusJSON(http.StatusInternalServerError,
+				gin.H{"error": "RequireVerifiedEmail precisa rodar após RequireAuth"})
+			return
+		}
+		userID, ok := raw.(int64)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusInternalServerError,
+				gin.H{"error": "user id em formato inesperado"})
+			return
+		}
+
+		verified, err := lookup.IsEmailVerified(c.Request.Context(), userID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError,
+				gin.H{"error": "falha ao validar verificação"})
+			return
+		}
+		if !verified {
+			c.AbortWithStatusJSON(http.StatusForbidden,
+				gin.H{"error": domain.ErrEmailNotVerified.Error()})
+			return
+		}
+		c.Next()
+	}
 }

@@ -474,15 +474,19 @@ func (r *PurchaseRepository) ConfirmSession(ctx context.Context, sessionID strin
 // asset_id da purchase for NULL, todas as colunas de a/u vêm nil
 // e não montamos o Asset aninhado.
 func (r *PurchaseRepository) ListByUser(ctx context.Context, userID int64) ([]*domain.Purchase, error) {
+	// LEFT JOIN packs pra trazer FromPackTitle quando a compra veio
+	// de um pack. Pack deletado depois = pk.id null + título null.
 	const q = `
 		SELECT p.id, p.user_id, p.status, p.price_cents_snapshot, p.purchased_at,
 		       a.id, a.owner_id, a.title, a.description, a.tags,
 		       a.price_cents, a.thumbnail_path, a.model_path,
 		       a.created_at, a.updated_at,
-		       u.display_name, u.username, u.avatar_path
+		       u.display_name, u.username, u.avatar_path,
+		       p.from_pack_id, pk.title
 		  FROM purchases p
-		  LEFT JOIN assets a ON a.id = p.asset_id
-		  LEFT JOIN users  u ON u.id = a.owner_id
+		  LEFT JOIN assets a  ON a.id  = p.asset_id
+		  LEFT JOIN users  u  ON u.id  = a.owner_id
+		  LEFT JOIN packs  pk ON pk.id = p.from_pack_id
 		 WHERE p.user_id = $1 AND p.status = 'paid'
 		 ORDER BY p.purchased_at DESC`
 
@@ -518,6 +522,7 @@ func (r *PurchaseRepository) ListByUser(ctx context.Context, userID int64) ([]*d
 			&aPriceCents, &aThumbPath, &aModelPath,
 			&aCreatedAt, &aUpdatedAt,
 			&uDisplayName, &uUsername, &uAvatarPath,
+			&p.FromPackID, &p.FromPackTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan purchase row: %w", err)
 		}

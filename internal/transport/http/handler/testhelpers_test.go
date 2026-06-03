@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -184,8 +185,11 @@ func withAuthUser(userID int64) gin.HandlerFunc {
 // ============================================================
 
 type fakeUserRepo struct {
-	CreateFn      func(ctx context.Context, email, hash, username, displayName string) (*domain.User, error)
-	FindByEmailFn func(ctx context.Context, email string) (*domain.User, error)
+	CreateFn            func(ctx context.Context, email, hash, username, displayName string) (*domain.User, error)
+	FindByEmailFn       func(ctx context.Context, email string) (*domain.User, error)
+	FindByIDFn          func(ctx context.Context, id int64) (*domain.User, error)
+	UpdatePasswordFn    func(ctx context.Context, id int64, newHash string) error
+	SetEmailVerifiedFn  func(ctx context.Context, id int64) error
 }
 
 func (f *fakeUserRepo) Create(ctx context.Context, email, hash, username, displayName string) (*domain.User, error) {
@@ -194,12 +198,104 @@ func (f *fakeUserRepo) Create(ctx context.Context, email, hash, username, displa
 	}
 	return f.CreateFn(ctx, email, hash, username, displayName)
 }
+func (f *fakeUserRepo) FindByID(ctx context.Context, id int64) (*domain.User, error) {
+	if f.FindByIDFn == nil {
+		panic("fakeUserRepo.FindByID chamado sem mock configurado")
+	}
+	return f.FindByIDFn(ctx, id)
+}
+func (f *fakeUserRepo) UpdatePassword(ctx context.Context, id int64, newHash string) error {
+	if f.UpdatePasswordFn == nil {
+		panic("fakeUserRepo.UpdatePassword chamado sem mock configurado")
+	}
+	return f.UpdatePasswordFn(ctx, id, newHash)
+}
+func (f *fakeUserRepo) SetEmailVerified(ctx context.Context, id int64) error {
+	if f.SetEmailVerifiedFn == nil {
+		panic("fakeUserRepo.SetEmailVerified chamado sem mock configurado")
+	}
+	return f.SetEmailVerifiedFn(ctx, id)
+}
 
 func (f *fakeUserRepo) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
 	if f.FindByEmailFn == nil {
 		panic("fakeUserRepo.FindByEmail chamado sem mock configurado")
 	}
 	return f.FindByEmailFn(ctx, email)
+}
+
+// ============================================================
+// Mocks: token repos (AuthHandler)
+// ============================================================
+
+type fakeVerifyRepo struct {
+	CreateFn  func(ctx context.Context, userID int64, hash string, expires time.Time) error
+	ConsumeFn func(ctx context.Context, hash string) (int64, error)
+}
+
+func (f *fakeVerifyRepo) Create(ctx context.Context, userID int64, hash string, expires time.Time) error {
+	if f.CreateFn == nil {
+		return nil // best-effort no caller; permite "no-op" sem panic
+	}
+	return f.CreateFn(ctx, userID, hash, expires)
+}
+func (f *fakeVerifyRepo) Consume(ctx context.Context, hash string) (int64, error) {
+	if f.ConsumeFn == nil {
+		panic("fakeVerifyRepo.Consume chamado sem mock")
+	}
+	return f.ConsumeFn(ctx, hash)
+}
+
+type fakeResetRepo struct {
+	CreateFn  func(ctx context.Context, userID int64, hash string, expires time.Time) error
+	ConsumeFn func(ctx context.Context, hash string) (int64, error)
+}
+
+func (f *fakeResetRepo) Create(ctx context.Context, userID int64, hash string, expires time.Time) error {
+	if f.CreateFn == nil {
+		return nil
+	}
+	return f.CreateFn(ctx, userID, hash, expires)
+}
+func (f *fakeResetRepo) Consume(ctx context.Context, hash string) (int64, error) {
+	if f.ConsumeFn == nil {
+		panic("fakeResetRepo.Consume chamado sem mock")
+	}
+	return f.ConsumeFn(ctx, hash)
+}
+
+type fakeRefreshRepo struct {
+	CreateFn           func(ctx context.Context, userID int64, hash string, expires time.Time) (int64, error)
+	RotateFn           func(ctx context.Context, oldHash, newHash string, expires time.Time) (int64, int64, error)
+	RevokeFn           func(ctx context.Context, hash string) error
+	RevokeAllForUserFn func(ctx context.Context, userID int64) error
+}
+
+func (f *fakeRefreshRepo) Create(ctx context.Context, userID int64, hash string, expires time.Time) (int64, error) {
+	if f.CreateFn == nil {
+		// Default: aceita silenciosamente, devolve id=1. Auth.Register/Login
+		// chamam isso pra emitir o par e raramente o teste precisa controlar.
+		return 1, nil
+	}
+	return f.CreateFn(ctx, userID, hash, expires)
+}
+func (f *fakeRefreshRepo) Rotate(ctx context.Context, oldHash, newHash string, expires time.Time) (int64, int64, error) {
+	if f.RotateFn == nil {
+		panic("fakeRefreshRepo.Rotate chamado sem mock")
+	}
+	return f.RotateFn(ctx, oldHash, newHash, expires)
+}
+func (f *fakeRefreshRepo) Revoke(ctx context.Context, hash string) error {
+	if f.RevokeFn == nil {
+		return nil
+	}
+	return f.RevokeFn(ctx, hash)
+}
+func (f *fakeRefreshRepo) RevokeAllForUser(ctx context.Context, userID int64) error {
+	if f.RevokeAllForUserFn == nil {
+		return nil
+	}
+	return f.RevokeAllForUserFn(ctx, userID)
 }
 
 // ============================================================
@@ -685,6 +781,7 @@ type fakePackRepo struct {
 	FindByIDFn        func(ctx context.Context, id int64) (*domain.Pack, error)
 	ListFn            func(ctx context.Context, page, pageSize int) ([]*domain.Pack, int64, error)
 	ListByOwnerFn     func(ctx context.Context, ownerID int64) ([]*domain.Pack, error)
+	ListByAssetIDFn   func(ctx context.Context, assetID int64) ([]*domain.Pack, error)
 	UpdateFn          func(ctx context.Context, id, ownerID int64, title, description string, price int64, assetIDs []int64) (*domain.Pack, error)
 	DeleteFn          func(ctx context.Context, id, ownerID int64) (string, error)
 	UpdateThumbnailFn func(ctx context.Context, id, ownerID int64, newPath string) (string, error)
@@ -713,6 +810,12 @@ func (f *fakePackRepo) ListByOwner(ctx context.Context, ownerID int64) ([]*domai
 		panic("fakePackRepo.ListByOwner chamado sem mock")
 	}
 	return f.ListByOwnerFn(ctx, ownerID)
+}
+func (f *fakePackRepo) ListByAssetID(ctx context.Context, assetID int64) ([]*domain.Pack, error) {
+	if f.ListByAssetIDFn == nil {
+		panic("fakePackRepo.ListByAssetID chamado sem mock")
+	}
+	return f.ListByAssetIDFn(ctx, assetID)
 }
 func (f *fakePackRepo) Update(ctx context.Context, id, ownerID int64, title, description string, price int64, assetIDs []int64) (*domain.Pack, error) {
 	if f.UpdateFn == nil {

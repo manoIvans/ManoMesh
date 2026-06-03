@@ -28,7 +28,9 @@ export default function AuthInterceptor() {
       // → form submit → 401 → navigate(/login)".
       if (location.pathname === '/login') return
 
-      logout()
+      // logout virou async (chama /logout pra revogar refresh server-side);
+      // não esperamos o Promise — o redirect deve acontecer imediatamente.
+      void logout()
       // state.sessionExpired: o Login lê pra mostrar banner explicando.
       // from: pra que após login bem-sucedido o usuário volte pra
       // página que estava tentando acessar.

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fileUrl, type Purchase } from '../api/client'
 import { formatDate, formatPrice } from '../lib/format'
@@ -160,13 +160,121 @@ function Content({
     )
   }
 
+  return <GroupedList purchases={purchases} />
+}
+
+// GroupedList: separa em duas seções —
+//   1. Pack groups: purchases que têm `from_pack_id` viram um header
+//      ("◆ Pack Medieval") seguido das suas N purchases indentadas.
+//   2. Direct purchases: assets comprados soltos, sem agrupamento.
+//
+// Pack órfão (from_pack_id veio mas from_pack_title null = pack
+// deletado depois) cai pro grupo "Pack removido" pra explicar o
+// agrupamento sem perder a linha.
+function GroupedList({ purchases }: { purchases: Purchase[] }) {
+  const { groups, direct } = useMemo(() => groupByPack(purchases), [purchases])
   return (
-    <ul className="space-y-3">
-      {purchases.map((p) => (
-        <LibraryLine key={p.id} purchase={p} />
+    <div className="space-y-6">
+      {groups.map((g) => (
+        <section key={g.key} className="space-y-2">
+          <header className="bg-arcane text-parchment border-4 border-ink shadow-pixel-sm px-4 py-2 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-widest text-parchment/80">
+                ◆ Comprado via pack
+              </p>
+              {g.packID ? (
+                <Link
+                  to={`/pack/${g.packID}`}
+                  className="block font-bold text-sm uppercase tracking-wider truncate hover:underline underline-offset-4 decoration-2"
+                  title={g.title}
+                >
+                  {g.title}
+                </Link>
+              ) : (
+                <p className="font-bold text-sm uppercase tracking-wider truncate italic opacity-80">
+                  {g.title}
+                </p>
+              )}
+            </div>
+            <p className="text-[10px] uppercase tracking-widest font-bold flex-shrink-0">
+              {g.items.length} {g.items.length === 1 ? 'asset' : 'assets'}
+            </p>
+          </header>
+          <ul className="space-y-2 pl-3 border-l-4 border-arcane">
+            {g.items.map((p) => (
+              <LibraryLine key={p.id} purchase={p} />
+            ))}
+          </ul>
+        </section>
       ))}
-    </ul>
+      {direct.length > 0 && (
+        <ul className="space-y-3">
+          {direct.map((p) => (
+            <LibraryLine key={p.id} purchase={p} />
+          ))}
+        </ul>
+      )}
+    </div>
   )
+}
+
+// PackGroup: assets comprados juntos num pack. `packID` null indica
+// pack que foi DELETADO depois — mantemos o agrupamento pra que o
+// total faça sentido na cabeça do user, mas sem link.
+type PackGroup = {
+  key: string // dedupe key: "pack-<id>" ou "removed-<index>"
+  packID: number | null
+  title: string
+  items: Purchase[]
+}
+
+// groupByPack particiona o array. Usa Map pra deduplicar por
+// from_pack_id; purchases sem from_pack_id vão em `direct`.
+// Pack órfão (id presente mas title null) aparece como "Pack removido"
+// com o id no key pra distinguir múltiplos órfãos.
+function groupByPack(purchases: Purchase[]): {
+  groups: PackGroup[]
+  direct: Purchase[]
+} {
+  const byPack = new Map<number, PackGroup>()
+  const orphans = new Map<number, PackGroup>()
+  const direct: Purchase[] = []
+
+  for (const p of purchases) {
+    if (p.from_pack_id == null) {
+      direct.push(p)
+      continue
+    }
+    if (p.from_pack_title) {
+      const existing = byPack.get(p.from_pack_id)
+      if (existing) existing.items.push(p)
+      else {
+        byPack.set(p.from_pack_id, {
+          key: `pack-${p.from_pack_id}`,
+          packID: p.from_pack_id,
+          title: p.from_pack_title,
+          items: [p],
+        })
+      }
+    } else {
+      // Pack deletado depois — agrupa pelo id original mesmo sem título.
+      const existing = orphans.get(p.from_pack_id)
+      if (existing) existing.items.push(p)
+      else {
+        orphans.set(p.from_pack_id, {
+          key: `removed-${p.from_pack_id}`,
+          packID: null,
+          title: '[Pack removido]',
+          items: [p],
+        })
+      }
+    }
+  }
+
+  return {
+    groups: [...byPack.values(), ...orphans.values()],
+    direct,
+  }
 }
 
 // LibraryLine: linha de uma compra. Trata o caso de asset deletado

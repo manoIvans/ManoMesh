@@ -19,6 +19,28 @@ var ErrEmailAlreadyExists = errors.New("email já cadastrado")
 // a UI possa apontar pro campo certo no form.
 var ErrUsernameAlreadyExists = errors.New("username já cadastrado")
 
+// ErrInvalidToken: token de reset/verificação não existe no DB OU já
+// foi usado OU não bate. Backend mistura os 3 casos no mesmo sentinel
+// pra não vazar info útil pra atacante (qual passo do fluxo falhou).
+// Mapeado pra 400.
+var ErrInvalidToken = errors.New("token inválido")
+
+// ErrExpiredToken: token existe E não foi usado, mas expires_at < now.
+// Mapeado pra 410 Gone — o recurso existiu mas não está mais utilizável,
+// cliente deve solicitar um novo.
+var ErrExpiredToken = errors.New("token expirado")
+
+// ErrRefreshTokenReused: detecção de reuso na rotação estrita —
+// tentativa de usar token já revogado E com replaced_by_id setado.
+// Reação no handler: revogar TUDO do user. Mapeado pra 401 +
+// derrubar todas as sessões.
+var ErrRefreshTokenReused = errors.New("refresh token reusado (possível roubo)")
+
+// ErrEmailNotVerified: usuário tenta ação que exige email verificado
+// (ex: POST /assets). Mapeado pra 403. Frontend mostra banner +
+// botão "reenviar verificação".
+var ErrEmailNotVerified = errors.New("email não verificado")
+
 // User representa um usuário persistido no banco.
 //
 // PasswordHash NUNCA deve ser serializado em respostas HTTP — daí o
@@ -30,15 +52,16 @@ var ErrUsernameAlreadyExists = errors.New("username já cadastrado")
 // resulte em `"avatar_path": null` ou ausência, e não em
 // `{"String":"","Valid":false}`.
 type User struct {
-	ID           int64     `json:"id"`
-	Email        string    `json:"email"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	Bio          string    `json:"bio"`
-	AvatarPath   *string   `json:"avatar_path,omitempty"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              int64      `json:"id"`
+	Email           string     `json:"email"`
+	Username        string     `json:"username"`
+	DisplayName     string     `json:"display_name"`
+	Bio             string     `json:"bio"`
+	AvatarPath      *string    `json:"avatar_path,omitempty"`
+	PasswordHash    string     `json:"-"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // PublicUser é a versão SEM email do User, devolvida em endpoints

@@ -20,6 +20,9 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 // Vite gera chunks separados a partir desses imports dinâmicos
 // automaticamente — sem precisar configurar manualSplits.
 const Login = lazy(() => import('./pages/Login'))
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'))
+const ResetPassword = lazy(() => import('./pages/ResetPassword'))
+const VerifyEmail = lazy(() => import('./pages/VerifyEmail'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Viewer = lazy(() => import('./pages/Viewer'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
@@ -34,6 +37,7 @@ const Checkout = lazy(() => import('./pages/Checkout'))
 const Packs = lazy(() => import('./pages/Packs'))
 const PackDetail = lazy(() => import('./pages/PackDetail'))
 const PackNew = lazy(() => import('./pages/PackNew'))
+const PackEdit = lazy(() => import('./pages/PackEdit'))
 const Creators = lazy(() => import('./pages/Creators'))
 const Notifications = lazy(() => import('./pages/Notifications'))
 
@@ -62,6 +66,36 @@ export default function App() {
             element={
               <Suspense fallback={<RouteFallback />}>
                 <Login />
+              </Suspense>
+            }
+          />
+          {/* Recuperação de senha. /forgot pede email; /reset
+              consome token (vem do link no email). Públicas — o
+              próprio token é a credencial. */}
+          <Route
+            path="/forgot"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <ForgotPassword />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/reset"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <ResetPassword />
+              </Suspense>
+            }
+          />
+          {/* /verify?token=... confirma email. Pode ser acessada
+              logado (refresca currentUser) ou deslogado (mostra
+              sucesso/erro e oferece login). */}
+          <Route
+            path="/verify"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <VerifyEmail />
               </Suspense>
             }
           />
@@ -211,6 +245,19 @@ export default function App() {
               <ProtectedRoute>
                 <Suspense fallback={<RouteFallback />}>
                   <PackNew />
+                </Suspense>
+              </ProtectedRoute>
+            }
+          />
+          {/* /dashboard/packs/:id/edit: form de edição. Ownership
+              é validada client-side (redireciona pro detalhe) E
+              server-side (PUT devolve 403). */}
+          <Route
+            path="/dashboard/packs/:id/edit"
+            element={
+              <ProtectedRoute>
+                <Suspense fallback={<RouteFallback />}>
+                  <PackEdit />
                 </Suspense>
               </ProtectedRoute>
             }

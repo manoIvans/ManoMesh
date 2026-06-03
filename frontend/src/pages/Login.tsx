@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { PIXEL_BTN, PIXEL_INPUT } from '../styles/pixel'
@@ -10,7 +10,10 @@ import { PIXEL_BTN, PIXEL_INPUT } from '../styles/pixel'
 // Toggle local decide qual chamar — uma rota /register dedicada só
 // duplicaria o formulário.
 type Mode = 'login' | 'register'
-type AuthResponse = { token: string }
+// Backend devolve par (access+refresh) desde a Fase de auth hygiene.
+// Tipo aqui é minimal porque a tela só precisa dos 2 tokens — o user
+// é re-fetchado via GET /users/me dentro do AuthProvider.
+type AuthResponse = { access_token: string; refresh_token: string }
 
 export default function Login() {
   const { login } = useAuth()
@@ -28,10 +31,12 @@ export default function Login() {
   const navState = (location.state as {
     from?: { pathname: string }
     sessionExpired?: boolean
+    resetSuccess?: boolean
   } | null) ?? null
 
   const redirectTo = navState?.from?.pathname ?? '/dashboard'
   const sessionExpired = navState?.sessionExpired === true
+  const resetSuccess = navState?.resetSuccess === true
 
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
@@ -63,8 +68,11 @@ export default function Login() {
             display_name: displayName.trim(),
           }
     try {
-      const { token } = await api.post<AuthResponse>(path, body)
-      login(token)
+      const { access_token, refresh_token } = await api.post<AuthResponse>(
+        path,
+        body,
+      )
+      login(access_token, refresh_token)
       navigate(redirectTo, { replace: true })
     } catch (err) {
       setError(messageFor(err, mode))
@@ -89,6 +97,14 @@ export default function Login() {
             className="bg-twilight text-parchment border-b-4 border-ink px-6 py-3 text-xs uppercase tracking-widest"
           >
             ▸ Sua sessão expirou. Entre de novo pra continuar.
+          </div>
+        )}
+        {resetSuccess && mode === 'login' && (
+          <div
+            role="status"
+            className="bg-arcane text-parchment border-b-4 border-ink px-6 py-3 text-xs uppercase tracking-widest"
+          >
+            ✓ Senha atualizada. Entre com a nova.
           </div>
         )}
 
@@ -198,18 +214,28 @@ export default function Login() {
           </button>
         </form>
 
-        <div className="border-t-4 border-ink px-6 py-3 text-xs uppercase tracking-wider">
-          {mode === 'login' ? 'Sem conta?' : 'Já tem conta?'}{' '}
-          <button
-            type="button"
-            onClick={() => {
-              setMode(mode === 'login' ? 'register' : 'login')
-              setError(null)
-            }}
-            className="font-bold underline underline-offset-4 decoration-2 hover:text-arcane"
-          >
-            {mode === 'login' ? 'Criar agora' : 'Entrar'}
-          </button>
+        <div className="border-t-4 border-ink px-6 py-3 text-xs uppercase tracking-wider flex flex-wrap items-center justify-between gap-2">
+          <span>
+            {mode === 'login' ? 'Sem conta?' : 'Já tem conta?'}{' '}
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === 'login' ? 'register' : 'login')
+                setError(null)
+              }}
+              className="font-bold underline underline-offset-4 decoration-2 hover:text-arcane"
+            >
+              {mode === 'login' ? 'Criar agora' : 'Entrar'}
+            </button>
+          </span>
+          {mode === 'login' && (
+            <Link
+              to="/forgot"
+              className="font-bold underline underline-offset-4 decoration-2 hover:text-arcane text-ink/70"
+            >
+              Esqueci senha
+            </Link>
+          )}
         </div>
       </div>
     </div>

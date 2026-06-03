@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/manoIvans/manomesh/internal/auth"
+	"github.com/manoIvans/manomesh/internal/mail"
 	"github.com/manoIvans/manomesh/internal/repository/postgres"
 	"github.com/manoIvans/manomesh/internal/storage"
 	"github.com/manoIvans/manomesh/internal/transport/http/handler"
@@ -17,9 +18,16 @@ import (
 
 // NewRouter monta o roteador Gin com todas as rotas e middlewares
 // da aplicação. As dependências (db, token manager, storage de
-// arquivos, origens CORS) entram por parâmetro — nada de singletons
-// globais.
-func NewRouter(db *pgxpool.Pool, tm *auth.TokenManager, files *storage.LocalStorage, allowedOrigins []string) *gin.Engine {
+// arquivos, mailer, origens CORS, URL do frontend) entram por parâmetro
+// — nada de singletons globais.
+func NewRouter(
+	db *pgxpool.Pool,
+	tm *auth.TokenManager,
+	files *storage.LocalStorage,
+	mailer mail.Mailer,
+	frontendBaseURL string,
+	allowedOrigins []string,
+) *gin.Engine {
 	r := gin.Default() // logger + recovery já inclusos
 
 	// CORS aplicado no engine (não em um grupo) para cobrir TODAS as
@@ -71,7 +79,18 @@ func NewRouter(db *pgxpool.Pool, tm *auth.TokenManager, files *storage.LocalStor
 	r.GET("/ping", healthHandler.Ping)
 
 	userRepo := postgres.NewUserRepository(db)
-	authHandler := handler.NewAuthHandler(userRepo, tm)
+	verifyTokenRepo := postgres.NewEmailVerificationTokenRepository(db)
+	resetTokenRepo := postgres.NewPasswordResetTokenRepository(db)
+	refreshTokenRepo := postgres.NewRefreshTokenRepository(db)
+	authHandler := handler.NewAuthHandler(
+		userRepo,
+		verifyTokenRepo,
+		resetTokenRepo,
+		refreshTokenRepo,
+		tm,
+		mailer,
+		frontendBaseURL,
+	)
 	userHandler := handler.NewUserHandler(userRepo, files)
 
 	assetRepo := postgres.NewAssetRepository(db)
@@ -97,6 +116,17 @@ func NewRouter(db *pgxpool.Pool, tm *auth.TokenManager, files *storage.LocalStor
 	{
 		api.POST("/register", authHandler.Register)
 		api.POST("/login", authHandler.Login)
+		// Refresh tokens: rotação estrita (revoga ao usar). Sem auth
+		// — o próprio refresh_token é a credencial.
+		api.POST("/refresh", authHandler.Refresh)
+		// Logout único: revoga UM refresh_token específico. Idempotente.
+		api.POST("/logout", authHandler.Logout)
+		// Recuperação de senha: forgot é 202 sempre (anti-enumeration);
+		// reset consome token + atualiza senha + revoga sessões.
+		api.POST("/forgot-password", authHandler.ForgotPassword)
+		api.POST("/reset-password", authHandler.ResetPassword)
+		// Verificação de email: público (token é a credencial).
+		api.POST("/verify-email", authHandler.VerifyEmail)
 
 		// Catálogo de assets é público — qualquer um pode listar e
 		// ver detalhes. Mantemos FORA do grupo protegido de propósito.
@@ -124,6 +154,9 @@ func NewRouter(db *pgxpool.Pool, tm *auth.TokenManager, files *storage.LocalStor
 		// N assets do mesmo vendedor num único item à venda.
 		api.GET("/packs", packHandler.List)
 		api.GET("/packs/:id", packHandler.GetByID)
+		// Lookup inverso: packs que contêm este asset. Pública —
+		// AssetDetail mostra badge "também faz parte do pack X".
+		api.GET("/assets/:id/packs", packHandler.ByAssetID)
 
 		// Diretório de criadores. Pública porque o catálogo já
 		// expõe autores. Aceita ?limit= pra alimentar a sessão
@@ -138,9 +171,18 @@ func NewRouter(db *pgxpool.Pool, tm *auth.TokenManager, files *storage.LocalStor
 		protected := api.Group("")
 		protected.Use(middleware.RequireAuth(tm))
 		{
-			protected.POST("/assets", assetHandler.Create)
+			// POST /assets exige email verificado — é a única ação
+			// "criativa" gateada por enquanto. Login/browse/library
+			// continuam liberados pra que o user complete o flow.
+			protected.POST("/assets",
+				middleware.RequireVerifiedEmail(userRepo),
+				assetHandler.Create,
+			)
 			protected.PUT("/assets/:id", assetHandler.Update)
 			protected.DELETE("/assets/:id", assetHandler.Delete)
+			// ResendVerification fica autenticado (front pede com JWT
+			// do próprio user) — não precisa proteção extra.
+			protected.POST("/resend-verification", authHandler.ResendVerification)
 			// Trocar só o arquivo físico (thumbnail OU modelo). Multipart.
 			// Mantemos separado do PUT JSON pra não misturar dois mundos
 			// no mesmo endpoint e pra que o cliente possa trocar arquivos

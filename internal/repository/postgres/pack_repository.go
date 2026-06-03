@@ -347,6 +347,49 @@ func (r *PackRepository) UpdateThumbnail(ctx context.Context, id, ownerID int64,
 	return "", nil
 }
 
+// ListByAssetID devolve os packs que CONTÊM o asset. Lookup inverso
+// via pack_items — AssetDetail usa pra mostrar badge "também faz
+// parte do pack X". Sem items aninhados (caller já está olhando
+// o asset; só precisa do header + items_count).
+//
+// Ordenado por pack.created_at DESC (mais recente primeiro). Sem
+// paginação porque um asset raramente está em mais de poucos packs.
+func (r *PackRepository) ListByAssetID(ctx context.Context, assetID int64) ([]*domain.Pack, error) {
+	const q = `
+		SELECT p.id, p.owner_id, p.title, p.description,
+		       p.price_cents, p.thumbnail_path,
+		       p.created_at, p.updated_at,
+		       u.display_name, u.username, u.avatar_path,
+		       (SELECT COUNT(*) FROM pack_items WHERE pack_id = p.id) AS items_count
+		  FROM pack_items pi
+		  JOIN packs p ON p.id = pi.pack_id
+		  JOIN users u ON u.id = p.owner_id
+		 WHERE pi.asset_id = $1
+		 ORDER BY p.created_at DESC`
+
+	rows, err := r.db.Query(ctx, q, assetID)
+	if err != nil {
+		return nil, fmt.Errorf("select packs by asset: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*domain.Pack, 0)
+	for rows.Next() {
+		p := &domain.Pack{}
+		if err := rows.Scan(
+			&p.ID, &p.OwnerID, &p.Title, &p.Description,
+			&p.PriceCents, &p.ThumbnailPath,
+			&p.CreatedAt, &p.UpdatedAt,
+			&p.AuthorName, &p.AuthorUsername, &p.AuthorAvatarPath,
+			&p.ItemsCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan asset-pack row: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // loadItems busca os Asset[] que compõem um pack, ordenados por
 // pack_items.position ASC, com author via JOIN em users.
 func (r *PackRepository) loadItems(ctx context.Context, packID int64) ([]*domain.Asset, error) {

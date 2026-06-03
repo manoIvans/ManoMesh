@@ -197,6 +197,12 @@ type Purchase struct {
 	// Asset é nil se o vendedor deletou o asset depois da compra.
 	// O front mostra "asset removido" quando isso acontece.
 	Asset *Asset `json:"asset,omitempty"`
+	// FromPackID/Title: marcado quando a purchase nasceu de um pack
+	// no checkout. Title vem via LEFT JOIN — se o pack foi deletado
+	// depois, FK SET NULL apaga FromPackID mas a purchase persiste.
+	// Frontend usa pra agrupar a library: "via pack Medieval".
+	FromPackID    *int64  `json:"from_pack_id,omitempty"`
+	FromPackTitle *string `json:"from_pack_title,omitempty"`
 }
 
 // CheckoutSessionStatus rastreia o estado da tentativa de pagamento.

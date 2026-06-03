@@ -53,6 +53,10 @@ export type User = {
   display_name: string
   bio: string
   avatar_path?: string | null
+  // email_verified_at vem populado quando o user confirma o email
+  // via /verify?token=... — frontend usa pra esconder o banner e
+  // o backend pra liberar POST /assets.
+  email_verified_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -161,9 +165,12 @@ export type Purchase = {
   price_cents_snapshot: number
   purchased_at: string
   asset?: Asset | null
-  // from_pack_id: marcado quando a purchase nasceu de um pack no
-  // checkout. Frontend mostra "comprado via pack #X" na biblioteca.
+  // from_pack_id + from_pack_title: marcados quando a purchase nasceu
+  // de um pack. Title vem via LEFT JOIN no backend — null se o pack
+  // foi deletado depois (FK SET NULL apaga from_pack_id também). Front
+  // agrupa library por from_pack_id.
   from_pack_id?: number | null
+  from_pack_title?: string | null
 }
 
 // CheckoutSessionStatus espelha o que o backend grava em
@@ -273,18 +280,62 @@ export function setOnUnauthorized(handler: UnauthorizedHandler | null) {
 // Rotas onde 401 NÃO deve disparar logout global — são endpoints de
 // login/register cuja falha (credencial errada) é responsabilidade
 // da própria tela tratar. Sem este filtro, errar a senha derrubaria
-// o usuário do login pro login com mensagem de "sessão expirada",
-// que é confuso.
-const AUTH_PATHS_NO_LOGOUT = ['/api/v1/login', '/api/v1/register']
+// o usuário do login pro login com mensagem de "sessão expirada".
+// /refresh entra aqui porque um 401 dele = refresh inválido, e o
+// fluxo de fallback é o próprio refresh tentar (loop infinito).
+const AUTH_PATHS_NO_LOGOUT = [
+  '/api/v1/login',
+  '/api/v1/register',
+  '/api/v1/refresh',
+  '/api/v1/forgot-password',
+  '/api/v1/reset-password',
+  '/api/v1/verify-email',
+]
+
+// refreshInflight: enquanto uma rotação está acontecendo, requests
+// que receberem 401 vão ESPERAR essa Promise terminar antes de tentar
+// de novo. Garante que múltiplas requests paralelas com access expirado
+// disparem APENAS UM /refresh e reapliquem o mesmo token novo.
+let refreshInflight: Promise<boolean> | null = null
+
+// performRefresh: chama POST /refresh com o refresh atual. Em sucesso
+// grava o novo par no tokenStorage e devolve true. Em falha, limpa
+// os dois tokens (forçando logout no próximo `onUnauthorized`).
+async function performRefresh(): Promise<boolean> {
+  const refresh = tokenStorage.getRefresh()
+  if (!refresh) return false
+  try {
+    const res = await fetch(`${BASE_URL}/api/v1/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    })
+    if (!res.ok) {
+      tokenStorage.clear()
+      return false
+    }
+    const data = (await res.json()) as {
+      access_token: string
+      refresh_token: string
+    }
+    tokenStorage.setPair(data.access_token, data.refresh_token)
+    return true
+  } catch {
+    tokenStorage.clear()
+    return false
+  }
+}
 
 // request é a única função que faz fetch. Toda chamada da app passa
 // por aqui — é o lugar para auth, base URL, parsing e tratamento de
-// erro. Manter centralizado evita "esqueci de mandar o token nesse
-// fetch específico".
+// erro. Mantém centralizado o fluxo de refresh-on-401: a primeira
+// 401 dispara uma rotação (compartilhada entre todas as requests
+// concorrentes) e tenta a request de novo UMA vez com o novo token.
 async function request<T>(
   method: string,
   path: string,
   body?: RequestBody,
+  _retry?: boolean,
 ): Promise<T> {
   const headers: Record<string, string> = {}
 
@@ -316,6 +367,23 @@ async function request<T>(
   // 204 No Content (ex: DELETE) — não tem corpo, devolve undefined.
   if (res.status === 204) {
     return undefined as T
+  }
+
+  // Refresh-on-401: tenta rotacionar o token ANTES de dar logout.
+  // Só tenta uma vez (_retry guard) e nunca em rotas auth (que não
+  // têm Authorization de qualquer jeito).
+  if (
+    res.status === 401 &&
+    !_retry &&
+    tokenStorage.getRefresh() &&
+    !AUTH_PATHS_NO_LOGOUT.includes(path)
+  ) {
+    if (!refreshInflight) refreshInflight = performRefresh()
+    const ok = await refreshInflight
+    refreshInflight = null
+    if (ok) {
+      return request<T>(method, path, body, true)
+    }
   }
 
   const responseBody = await parseBody(res)

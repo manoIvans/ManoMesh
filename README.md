@@ -8,7 +8,7 @@ Marketplace de assets 3D com estética pixel-art / RPG retrô. Catálogo públic
 
 ## Stack
 
-- **Backend**: Go 1.25 · Gin · pgx/v5 · golang-jwt/jwt/v5 · bcrypt
+- **Backend**: Go 1.25 · Gin · pgx/v5 · golang-jwt/jwt/v5 · bcrypt · `crypto/rand` + SHA-256 pra tokens de email/reset/refresh
 - **Banco**: PostgreSQL 16
 - **Frontend**: React 18 · Vite 6 · TypeScript · Tailwind v4
 - **3D**: three.js · @react-three/fiber · @react-three/drei
@@ -20,9 +20,12 @@ Marketplace de assets 3D com estética pixel-art / RPG retrô. Catálogo públic
 
 ### Usuário
 - Cadastro com `username` único + `display_name` + email + senha
+- **Verificação de email**: register dispara email com link (stub do mailer loga no stdout em dev); confirmar libera POST /assets. Banner persistente no header até confirmar, com botão "Reenviar"
+- **Reset de senha por email**: `/forgot` → POST /forgot-password (sempre 202, anti-enumeration) → email com link → `/reset?token=...` → atualiza senha + revoga todas as sessões
+- **Refresh tokens com rotação estrita**: access token JWT (1h) + refresh opaque (30d); cada `POST /refresh` revoga o token antigo e emite par novo; detecção de reuso revoga todas as sessões do user
 - Perfil editável (`/perfil/me`): display name, bio, avatar (upload PNG/JPG/WEBP até 2 MiB)
 - Perfil público em `/u/:username` listando os assets do usuário
-- Auto-logout em 401 (token expirado) com redirect e banner "Sessão expirada"
+- Auto-refresh em 401: cliente HTTP tenta rotacionar o token antes de logar fora; só dispara logout global se o refresh também falha
 
 ### Catálogo
 - Galeria pública com cards pixel-art
@@ -38,7 +41,7 @@ Marketplace de assets 3D com estética pixel-art / RPG retrô. Catálogo públic
 - Editar/deletar pelo `OwnerPanel` no `/asset/:id`
 - Trocar thumbnail/modelo independentemente dos metadados (rotas multipart separadas)
 - "Minha Loja" (`/my-store`): grid dos próprios assets
-- **Packs** (bundles): agrupar 2-50 assets próprios num único item à venda com preço próprio (desconto vs soma individual). Thumbnail opcional (fallback pro 1º item). Items são SEMPRE assets do mesmo dono — validado no repo via `SELECT FOR UPDATE` que previne race com mudança de ownership. Carrinho misto (assets + packs), checkout expande pack em N purchases com **dedupe** dos assets que o comprador já tem 'paid' (cobra preço cheio mesmo assim — política "compra só os faltantes, preço cheio"). Cada purchase recebe `from_pack_id` pra rastrear origem.
+- **Packs** (bundles): agrupar 2-50 assets próprios num único item à venda com preço próprio (desconto vs soma individual). Thumbnail opcional (fallback pro 1º item). Items são SEMPRE assets do mesmo dono — validado no repo via `SELECT FOR UPDATE` que previne race com mudança de ownership. Carrinho misto (assets + packs), checkout expande pack em N purchases com **dedupe** dos assets que o comprador já tem 'paid' (cobra preço cheio mesmo assim — política "compra só os faltantes, preço cheio"). Cada purchase recebe `from_pack_id` pra rastrear origem; biblioteca agrupa por pack. AssetDetail tem badge "também faz parte do pack X" via lookup inverso. Vendedor edita/exclui packs direto na `Minha Loja`.
 - **Dashboard analítico** em `/my-store`: total de vendas, receita, compradores únicos, asset mais vendido e tabela de últimas vendas (com link pro perfil do comprador)
 
 ### Comércio
@@ -93,7 +96,7 @@ Marketplace de assets 3D com estética pixel-art / RPG retrô. Catálogo públic
 │     ├─ styles/pixel.ts     # PIXEL_BTN, PIXEL_INPUT, ASSET_GRID_CLASSES
 │     ├─ pages/              # 1 arquivo por rota
 │     └─ App.tsx             # Routes
-├─ migrations/               # 014 arquivos SQL, ordem importante
+├─ migrations/               # 016 arquivos SQL, ordem importante
 ├─ uploads/                  # bind mount: thumbnails/, models/, avatars/
 ├─ Dockerfile                # multi-stage build da API
 ├─ docker-compose.yml        # Postgres + API
@@ -151,16 +154,16 @@ cd frontend && npm run build  # produção
 
 ## Testes
 
-**Backend**: 106 testes de handler + 20 nos pacotes `auth` e `migrate` = **126 testes Go**. Handler tests em [internal/transport/http/handler/*_test.go](internal/transport/http/handler/) cobrem caminhos felizes + mapeamento de erro sentinel (404/403/409/410/413/415) + side-effects importantes (cleanup de arquivos no delete/rollback, hooks de notificação no confirm de pagamento, idempotência do confirm). Não tocam no banco — usam mocks das interfaces (`fakeUserRepo`, `fakeAssetRepo`, `fakeNotificationSink`, `fakePurchaseRepo`, `fakeFileStorage`, etc.) definidos em [testhelpers_test.go](internal/transport/http/handler/testhelpers_test.go).
+**Backend**: 120 testes de handler + 20 nos pacotes `auth` e `migrate` = **140 testes Go**. Handler tests em [internal/transport/http/handler/*_test.go](internal/transport/http/handler/) cobrem caminhos felizes + mapeamento de erro sentinel (404/403/409/410/413/415) + side-effects importantes (cleanup de arquivos no delete/rollback, hooks de notificação no confirm de pagamento, idempotência do confirm). Não tocam no banco — usam mocks das interfaces (`fakeUserRepo`, `fakeAssetRepo`, `fakeNotificationSink`, `fakePurchaseRepo`, `fakeFileStorage`, etc.) definidos em [testhelpers_test.go](internal/transport/http/handler/testhelpers_test.go).
 
 Padrão dos mocks: cada interface tem um struct fake com campos `XxxFn func(...)`. Se o teste **não configura** uma função e ela é chamada, panic — esquecimento de mock vira falha óbvia em vez de nil pointer no fundo. Notification sink captura chamadas (`SoldAssetsCalls`, `BuyerPurchasesCalls`, `ForReviewCalls`) pra que testes verifiquem hooks dispararam (ou não) com args corretos. Tests de multipart usam helpers `doMultipart` / `doMultipartWithRepeats` (último suporta campos repetidos como `tags=a&tags=b`).
 
 Cobertura por handler:
-- **Auth** (7+): register sucesso + conflitos email/username + validação; login com bcrypt real + mensagem anti-enumeration
+- **Auth** (19+): register sucesso + conflitos email/username + validação; login com bcrypt real + mensagem anti-enumeration. Forgot/Reset (anti-enumeration 202 sem revelar emails; revoga sessões no reset). Verify email (success + invalid + expired). Refresh (sucesso devolve par novo, inválido/expirado → 401, **reuso → revoga TODAS as sessões + 401 com mensagem distinta**). Logout idempotente.
 - **Asset** (24+): GetByID, Update, Delete (com cleanup), Similar (cap), Trending, Tags, MyAssets; List dual-mode (legado vs `?page=`); **Create multipart** (sucesso + faltando thumb + rollback quando model falha + tipo inválido + tags vazias + DB falha → ambos arquivos limpos); **ReplaceThumbnail/ReplaceModel** (sucesso + remove antigo, DB falha → rollback do novo, 403/404, campo faltando)
 - **User** (17+): GetMe, GetByUsername (regression check: PublicUser não vaza email), UpdateMe, List (legado + `?page=` + cap de `page_size`); **UploadAvatar** (sucesso + remove antigo, primeira vez sem remoção, campo faltando, tipo inválido, DB falha → rollback); **DeleteAvatar** (remove antigo, idempotente sem avatar prévio)
 - **Cart + Checkout** (15+): Add asset (self-purchase), AddPack/RemovePack (404/409), Checkout cria sessão `pending` (não dispara notifs), GetCheckoutSession, ConfirmSession dispara notifs, **confirm idempotente NÃO refire notifs**, sessão expirada (410), List devolve shape misto `{assets, packs}`
-- **Pack** (18): Create multipart (com/sem thumb, < 2 items, asset_ids inválido, ErrPackInvalidItems faz cleanup), GetByID, List paginado, MyPacks (filtra por JWT), Update (200/403/404/binding), Delete (cleanup do thumb, 403), ReplaceThumbnail (sucesso + rollback do novo se DB falha)
+- **Pack** (20): Create multipart (com/sem thumb, < 2 items, asset_ids inválido, ErrPackInvalidItems faz cleanup), GetByID, List paginado, MyPacks (filtra por JWT), ByAssetID (lookup inverso), Update (200/403/404/binding), Delete (cleanup do thumb, 403), ReplaceThumbnail (sucesso + rollback do novo se DB falha)
 - **Favorite** (5): Add/Remove idempotentes, List/ListIDs
 - **Review** (4 cases + 3 subtestes): Create exige compra, conflito UNIQUE, rating fora de 1-5
 - **Notification** (3): List, UnreadCount (formato `{count}`), MarkAllRead
@@ -183,7 +186,8 @@ Não cobertos por ora (escopo maior):
 | `POSTGRES_DB` | docker-compose | `lojinha_assets` | |
 | `DATABASE_URL` | API | (computado) | DSN do pgx |
 | `JWT_SECRET` | API | — | **obrigatório**; compose aborta se vazio |
-| `JWT_TTL_HOURS` | API | `24` | TTL do token |
+| `JWT_TTL_HOURS` | API | `24` | TTL do access token (recomendado 1 em produção; refresh tokens cobrem o resto) |
+| `FRONTEND_BASE_URL` | API | `http://localhost:5173` | usado pra montar links nos emails de verificação e reset |
 | `APP_PORT` | API | `8080` | porta interna do container |
 | `GIN_MODE` | API | `release` | `debug` pra logs verbosos |
 | `UPLOAD_DIR` | API | `/app/uploads` | bind mount no host |
@@ -197,8 +201,16 @@ Não cobertos por ora (escopo maior):
 Todas as rotas em `/api/v1/*`. Health check em `/ping`. Uploads servidos em `/uploads/{thumbnails,models,avatars}/{uuid}.{ext}`.
 
 ### Auth (público)
-- `POST /register` — body `{email, password, username, display_name}` → `{token, user}`
-- `POST /login` — body `{email, password}` → `{token}`
+- `POST /register` — body `{email, password, username, display_name}` → `{access_token, refresh_token, user}`. Dispara email de verificação best-effort.
+- `POST /login` — body `{email, password}` → `{access_token, refresh_token}`. Mesmo `401 credenciais inválidas` pra email inexistente e senha errada (anti-enumeration).
+- `POST /refresh` — body `{refresh_token}` → `{access_token, refresh_token}`. **Rotação estrita**: revoga o antigo + insere novo na mesma transação. Reuso (mesmo refresh apresentado 2x após rotação) → revoga TODAS as sessões do user.
+- `POST /logout` — body `{refresh_token}` → 204. Idempotente.
+- `POST /forgot-password` — body `{email}` → **sempre 202** (não revela se o email existe). Se existir, envia link de reset.
+- `POST /reset-password` — body `{token, new_password}`. Em sucesso, revoga todas as sessões do user.
+- `POST /verify-email` — body `{token}`. Marca `users.email_verified_at`. Idempotente.
+
+### Auth (protegido)
+- `POST /resend-verification` — usa o JWT pra identificar; reenvia email de verificação. Sempre 202.
 
 ### Assets (público)
 - `GET /assets` — lista catálogo (inclui `average_rating` + `review_count`). **Dual-mode**: sem query devolve array bare (compat com a Galeria atual); com `?page=N&page_size=M` (default 20, cap 100) devolve `{items, page, page_size, total}`.
@@ -238,13 +250,14 @@ Todas as rotas em `/api/v1/*`. Health check em `/ping`. Uploads servidos em `/up
 - `POST /my/cart/checkout` — abre uma **CheckoutSession** `pending` (provider stub), expande packs em N purchases (dedupe contra `status='paid'` do user; pack inteiro cobrado mesmo se user já tem alguns assets do pack, snapshot proporcional entre items efetivamente comprados), cria as `purchases` em `status='pending'` e esvazia o carrinho. Retorna a sessão completa (`{id, status, total_cents, expires_at, purchase_ids[]}`). NÃO dispara notificações ainda.
 - `GET /my/checkout/sessions/:id` — detalhe da sessão (usado pelo stub do gateway no frontend).
 - `POST /my/checkout/sessions/:id/confirm` — marca a sessão e suas purchases como `paid`. **Idempotente** (webhooks reais podem retry). Aqui dispara `asset_sold` + `purchase_confirmation`. Erros: `404` (não encontrada), `410` (expirada, >30min), `409` (estado inválido / asset comprado em outra sessão).
-- `GET /my/library` — `Purchase[]` apenas `status='paid'` (pending/failed não aparecem; asset null quando vendedor deletou)
+- `GET /my/library` — `Purchase[]` apenas `status='paid'` (pending/failed não aparecem; asset null quando vendedor deletou). Inclui `from_pack_id` + `from_pack_title` (via LEFT JOIN packs) pra que o frontend agrupe compras por pack
 - `GET /my/library-ids` — `{ids: int[]}`
 - `GET /my/store/stats` — dashboard: `{total_sales, revenue_cents, unique_buyers, top_asset, recent_sales}`
 
 ### Packs (bundles de assets)
 - `GET /packs` (público) — listagem paginada `{items, page, page_size, total}` (default `page_size=20`, cap 100). Cada item inclui `items_count` (subquery), sem aninhar os assets pra evitar N+1
 - `GET /packs/:id` (público) — detalhe com `items: Asset[]` aninhados (JOIN em pack_items+assets, ordenado por `position`)
+- `GET /assets/:id/packs` (público) — lookup inverso: lista os packs que **contêm** este asset. Alimenta o badge "também faz parte do pack X" no AssetDetail
 - `POST /packs` (protegido) — multipart: `title`, `description`, `price_cents`, `asset_ids[]` (2-50 únicos, todos do mesmo dono), `thumbnail` (opcional)
 - `PUT /packs/:id` (protegido) — JSON `{title, description, price_cents, asset_ids[]}` (substitui items por completo)
 - `PUT /packs/:id/thumbnail` (protegido) — multipart `thumbnail` (troca arquivo, faz rollback se DB falha)
@@ -264,10 +277,10 @@ Todas as rotas em `/api/v1/*`. Health check em `/ping`. Uploads servidos em `/up
 ### Códigos comuns
 - `400` payload inválido
 - `401` sem token ou token expirado (frontend faz auto-logout)
-- `403` operação proibida (ex: editar asset de outro dono)
+- `403` operação proibida (asset/pack alheio; email não verificado em POST /assets)
 - `404` recurso inexistente
 - `409` conflito (email/username já existe, auto-compra, asset já comprado, sessão em estado inválido)
-- `410` sessão de checkout expirada (>30min após criação)
+- `410` sessão de checkout expirada / token de reset ou verify expirado
 - `413` arquivo > limite
 - `415` tipo de arquivo não suportado
 
@@ -293,12 +306,16 @@ Sequenciais, idempotentes (`IF NOT EXISTS`). Schema atual:
 | 012 | `checkout_sessions(id UUID, user_id, status pending/paid/failed/expired, provider, total_cents, expires_at, paid_at)` + `purchases.status` + `purchases.checkout_session_id`; UNIQUE parcial em purchases passa a filtrar `status='paid'` (pendings concorrentes pro mesmo asset coexistem; só pagas bloqueiam) |
 | 013 | `packs(id, owner_id, title, description, price_cents, thumbnail_path?, timestamps)` + `pack_items(pack_id, asset_id, position)` PK composta com CASCADE em ambas FKs. Validações de "min 2 items" e "todos do mesmo owner" ficam em app (PackRepository com `SELECT FOR UPDATE`) |
 | 014 | `cart_items` aceita asset_id OU pack_id (XOR via CHECK), surrogate `id BIGSERIAL` substitui PK composta, UNIQUEs parciais por target. `purchases.from_pack_id` (FK SET NULL pra preservar histórico se pack for deletado) |
+| 015 | Verificação de email + reset de senha. `users.email_verified_at` + tabelas `email_verification_tokens` e `password_reset_tokens` (token armazenado como SHA-256 hex; `used_at` em vez de DELETE pra trilha de auditoria) |
+| 016 | `refresh_tokens` com rotação estrita: chain via `replaced_by_id` (auto-FK SET NULL) permite detectar reuso de token revogado; index parcial em `WHERE revoked_at IS NULL` acelera "revogar tudo do user" |
 
 ---
 
 ## Decisões técnicas
 
-- **JWT por header `Authorization: Bearer`** (não cookie) → sem CSRF; CORS sem `Allow-Credentials`.
+- **JWT por header `Authorization: Bearer`** (não cookie) → sem CSRF; CORS sem `Allow-Credentials`. Access token TTL curto; refresh tokens são opaque (não-JWT) armazenados como SHA-256 hex no DB — vazamento do DB não expõe tokens utilizáveis.
+- **Refresh com rotação estrita + detecção de reuso**: cada `POST /refresh` gera par novo, revoga o antigo apontando `replaced_by_id`. Tentativa de reuso (token revogado COM sucessor) revoga toda a árvore de sessões do user e devolve 401 com mensagem distinta — frontend faz logout. Inspiração: OWASP refresh token best practices.
+- **Mailer behind interface** (`mail.Mailer`): `StubMailer` em dev loga no stdout — copia/cola o link de verificação/reset sem precisar configurar provider. Trocar por Resend/SMTP em produção é só DI no boot.
 - **Money em `int64` (centavos)** — float em dinheiro é receita pra bug.
 - **Single-source-of-truth de filtros = URL** (search params) — back/forward funcionam, compartilhável.
 - **Optimistic update** em favoritos e carrinho via Contexts dedicados (`FavoritesContext`, `CartContext`); fallback de rollback se backend rejeitar.
@@ -339,7 +356,6 @@ curl -s http://localhost:8080/api/v1/assets | head
 ## Roadmap (não implementado)
 
 - Tests de repository com Postgres real (testcontainers-go) — handler tests cobrem multipart (incluindo cleanup/rollback de arquivos) e sentinel mapping, mas SQL real fica no escopo de integration tests
-- Packs Fase 3 (opcional): edição inline de packs no `/dashboard`, AssetDetail mostrar "também faz parte do pack X", Library agrupando purchases por `from_pack_id`
 - Integração de gateway real (Stripe/MercadoPago). O fluxo já tem a estrutura de sessão + confirm idempotente; basta trocar o stub do `Checkout.tsx` pelo redirect externo e o `ConfirmCheckoutSession` pelo webhook do provedor.
 - Paginação no `Gallery` (hoje só os endpoints e o `Creators` usam; a galeria mantém filtro client-side)
 - Rename do diretório do repo `Lojinha-dos-meus-assets/` (cosmético — o módulo Go já é `manomesh`)

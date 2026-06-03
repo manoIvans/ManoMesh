@@ -5,6 +5,7 @@ import {
   api,
   fileUrl,
   type Asset,
+  type Pack,
   type Review,
   type ReviewSummary,
 } from '../api/client'
@@ -250,6 +251,11 @@ function Detail({ asset }: { asset: Asset }) {
           </div>
         </aside>
       </div>
+
+      {/* Packs que contêm este asset (lookup inverso via
+          GET /assets/:id/packs). Fetch separado do detalhe — falha
+          silenciosa esconde a sessão; asset sem packs idem. */}
+      <AssetPacksSection assetID={asset.id} />
 
       {/* Avaliações: lista pública + form de criar/editar pra quem
           comprou. Fetch separado do detalhe principal — falha não
@@ -810,3 +816,70 @@ function messageForDelete(err: unknown): string {
   return 'Falha ao excluir o asset'
 }
 
+
+// AssetPacksSection: badges/links pros packs que CONTÊM este asset.
+// Discreta — quando o asset não está em nenhum pack, sumimos sem
+// nem renderizar header (evita slot vazio na página).
+//
+// Fetch isolado: a falha (rede, 5xx) deixa a sessão silenciosa em
+// vez de quebrar o fluxo do AssetDetail. Loading também é silencioso
+// porque é um nice-to-have.
+function AssetPacksSection({ assetID }: { assetID: number }) {
+  const [packs, setPacks] = useState<Pack[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .get<Pack[]>(`/api/v1/assets/${assetID}/packs`)
+      .then((data) => {
+        if (!cancelled) setPacks(data)
+      })
+      .catch(() => {
+        if (!cancelled) setPacks([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [assetID])
+
+  if (!packs || packs.length === 0) return null
+
+  return (
+    <section className="bg-parchment border-4 border-arcane shadow-pixel">
+      <h2 className="bg-arcane text-parchment font-pixel text-xs uppercase border-b-4 border-ink px-4 py-3">
+        ◆ Também faz parte de
+      </h2>
+      <ul className="p-4 space-y-2">
+        {packs.map((p) => {
+          const count = p.items_count ?? 0
+          return (
+            <li key={p.id}>
+              <Link
+                to={`/pack/${p.id}`}
+                className="
+                  flex items-center justify-between gap-3
+                  border-2 border-ink shadow-pixel-sm p-3
+                  transition-all duration-75 ease-out
+                  hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none
+                  bg-parchment
+                "
+              >
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-widest text-arcane font-bold">
+                    ◆ Pack · {count} {count === 1 ? 'asset' : 'assets'}
+                  </p>
+                  <p className="font-bold text-sm uppercase tracking-wider truncate">
+                    {p.title}
+                  </p>
+                </div>
+                <p className="text-sm font-bold flex-shrink-0">
+                  ✦ {formatPrice(p.price_cents)}
+                </p>
+              </Link>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}

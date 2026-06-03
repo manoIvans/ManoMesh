@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Asset, type SellerStats } from '../api/client'
+import {
+  ApiError,
+  api,
+  fileUrl,
+  type Asset,
+  type Pack,
+  type SellerStats,
+} from '../api/client'
 import { formatDate, formatPrice } from '../lib/format'
 import { ASSET_GRID_CLASSES } from '../styles/pixel'
 import AssetCard from '../components/AssetCard'
 import AssetCardSkeleton from '../components/AssetCardSkeleton'
+import { useToast } from '../components/Toast'
 
 // Minha Loja: lista APENAS os assets cujo owner_id é o do usuário
 // logado. Backend já faz o filtro (GET /api/v1/my/assets) — o front
@@ -25,12 +33,14 @@ export default function MyStore() {
   // Falha silenciosa: o dashboard some, mas o grid de assets ainda
   // funciona. null = ainda carregando.
   const [stats, setStats] = useState<SellerStats | null>(null)
+  const [packs, setPacks] = useState<Pack[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setError(null)
     setAssets(null)
     setStats(null)
+    setPacks(null)
     let cancelled = false
 
     api
@@ -51,9 +61,22 @@ export default function MyStore() {
         // stats é nice-to-have; falha silenciosa esconde a sessão.
       })
 
+    api
+      .get<Pack[]>('/api/v1/my/packs')
+      .then((data) => {
+        if (!cancelled) setPacks(data)
+      })
+      .catch(() => {
+        // packs também é nice-to-have; sessão some se falhar.
+      })
+
     return () => {
       cancelled = true
     }
+  }, [])
+
+  const removePack = useCallback((packID: number) => {
+    setPacks((prev) => (prev ? prev.filter((p) => p.id !== packID) : prev))
   }, [])
 
   useEffect(() => {
@@ -70,9 +93,129 @@ export default function MyStore() {
     <div className="max-w-7xl mx-auto p-6 space-y-6">
       <Hero count={error ? null : assets?.length ?? null} loading={!error && assets === null} />
       {showStats && <StatsSection stats={stats} />}
+      <PacksSection packs={packs} onDeleted={removePack} />
       <Content assets={assets} error={error} onRetry={load} />
     </div>
   )
+}
+
+// PacksSection: lista dos packs do vendedor (GET /my/packs). Cada
+// linha tem thumb (própria ou fallback do 1º item), título, count,
+// preço e dois botões: editar (link pra /dashboard/packs/:id/edit) e
+// excluir (DELETE imediato, sem confirm separado — usa window.confirm
+// pra economizar UI; pack é editorial e fácil de recriar).
+//
+// Esconde a sessão inteira quando: ainda loading (packs=null) OU
+// vendedor não tem nenhum pack (packs=[]).
+function PacksSection({
+  packs,
+  onDeleted,
+}: {
+  packs: Pack[] | null
+  onDeleted: (packID: number) => void
+}) {
+  if (packs === null || packs.length === 0) return null
+  return (
+    <section className="bg-parchment border-4 border-arcane shadow-pixel">
+      <header className="bg-arcane text-parchment border-b-4 border-ink px-4 py-3 flex items-center justify-between gap-3">
+        <h2 className="font-pixel text-xs uppercase">◆ Seus Packs</h2>
+        <Link
+          to="/dashboard/packs/new"
+          className="bg-parchment text-ink border-2 border-ink shadow-pixel-sm px-3 py-1 text-[10px] font-bold uppercase tracking-widest hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none transition-all duration-75"
+        >
+          ▶ Novo pack
+        </Link>
+      </header>
+      <ul className="p-4 space-y-2">
+        {packs.map((p) => (
+          <PackRow key={p.id} pack={p} onDeleted={onDeleted} />
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function PackRow({
+  pack,
+  onDeleted,
+}: {
+  pack: Pack
+  onDeleted: (packID: number) => void
+}) {
+  const toast = useToast()
+  const [deleting, setDeleting] = useState(false)
+  const thumb = pack.thumbnail_path ?? null
+  const count = pack.items_count ?? 0
+
+  async function handleDelete() {
+    // Confirm nativo: pack tem N assets vinculados; perda é editorial,
+    // não destrutiva (assets continuam vivos), mas ainda merece atenção.
+    if (!window.confirm(`Excluir o pack "${pack.title}"?`)) return
+    setDeleting(true)
+    try {
+      await api.delete(`/api/v1/packs/${pack.id}`)
+      onDeleted(pack.id)
+      toast.success(`Pack "${pack.title}" excluído`)
+    } catch (err) {
+      setDeleting(false)
+      toast.error(messageForDeletePack(err))
+    }
+  }
+
+  return (
+    <li className="border-2 border-ink shadow-pixel-sm p-3 flex items-center gap-3 bg-parchment">
+      <Link to={`/pack/${pack.id}`} className="flex-shrink-0">
+        {thumb ? (
+          <img
+            src={fileUrl(thumb)}
+            alt={pack.title}
+            className="w-14 h-14 object-cover border-2 border-ink shadow-pixel-sm"
+          />
+        ) : (
+          <div className="w-14 h-14 bg-arcane/20 border-2 border-ink shadow-pixel-sm flex items-center justify-center font-bold text-[10px]">
+            PACK
+          </div>
+        )}
+      </Link>
+      <div className="flex-1 min-w-0">
+        <Link
+          to={`/pack/${pack.id}`}
+          className="block font-bold text-sm uppercase tracking-wider truncate hover:text-arcane"
+          title={pack.title}
+        >
+          {pack.title}
+        </Link>
+        <p className="text-[10px] uppercase tracking-widest text-ink/60">
+          {count} {count === 1 ? 'asset' : 'assets'} · ✦{' '}
+          {formatPrice(pack.price_cents)}
+        </p>
+      </div>
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        <Link
+          to={`/dashboard/packs/${pack.id}/edit`}
+          className="text-[10px] uppercase tracking-widest font-bold underline underline-offset-4 decoration-2 hover:text-arcane"
+        >
+          ✎ Editar
+        </Link>
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={deleting}
+          className="text-[10px] uppercase tracking-widest font-bold underline underline-offset-4 decoration-2 text-ink/60 hover:text-arcane disabled:opacity-50"
+        >
+          {deleting ? '...' : '✗ Excluir'}
+        </button>
+      </div>
+    </li>
+  )
+}
+
+function messageForDeletePack(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 403) return 'Este pack não é seu'
+    if (err.status === 404) return 'Pack já foi removido'
+  }
+  return 'Falha ao excluir o pack'
 }
 
 // StatsSection: card com 3 métricas grandes em cima + bloco do top

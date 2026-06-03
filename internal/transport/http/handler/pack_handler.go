@@ -22,6 +22,7 @@ type packRepository interface {
 	FindByID(ctx context.Context, id int64) (*domain.Pack, error)
 	List(ctx context.Context, page, pageSize int) ([]*domain.Pack, int64, error)
 	ListByOwner(ctx context.Context, ownerID int64) ([]*domain.Pack, error)
+	ListByAssetID(ctx context.Context, assetID int64) ([]*domain.Pack, error)
 	Update(ctx context.Context, id, ownerID int64, title, description string, priceCents int64, assetIDs []int64) (*domain.Pack, error)
 	Delete(ctx context.Context, id, ownerID int64) (string, error)
 	UpdateThumbnail(ctx context.Context, id, ownerID int64, newPath string) (string, error)
@@ -307,6 +308,23 @@ func (h *PackHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, page[*domain.Pack]{
 		Items: items, Page: pg, PageSize: ps, Total: total,
 	})
+}
+
+// ByAssetID público: packs que CONTÊM o asset. Alimenta o badge
+// "também faz parte do pack X" no AssetDetail. Sem items aninhados
+// (caller já está olhando o asset). 200 com [] quando o asset não
+// está em nenhum pack.
+func (h *PackHandler) ByAssetID(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	packs, err := h.packs.ListByAssetID(c.Request.Context(), id)
+	if err != nil {
+		serverError(c, "list packs by asset", err, "falha ao listar packs do asset")
+		return
+	}
+	c.JSON(http.StatusOK, packs)
 }
 
 // MyPacks: packs do vendedor logado. Sem paginação — vendedor não cria

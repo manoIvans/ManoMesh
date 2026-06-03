@@ -3,6 +3,7 @@ import { useAuth } from '../auth/AuthContext'
 import { useCart } from '../cart/CartContext'
 import { useNotifications } from '../notifications/NotificationsContext'
 import Avatar from './Avatar'
+import VerifyEmailBanner from './VerifyEmailBanner'
 
 // Shell de todas as páginas. A combinação bg-parchment + text-ink +
 // font-mono é aplicada no root para que TODA descendência herde a
@@ -35,10 +36,10 @@ export default function Layout() {
   const navigate = useNavigate()
 
   function handleLogout() {
-    logout()
-    // Vai pro /login (não /) pra que o usuário tenha entrada óbvia
-    // de re-autenticar. replace evita que o back do browser volte
-    // pra rota protegida onde estava antes (que agora daria 401).
+    // logout virou async (revoga refresh no backend), mas não esperamos
+    // — o navigate já tira o user da tela e o tokenStorage já foi limpo
+    // sincronamente. Falha do POST /logout é silenciosa.
+    void logout()
     navigate('/login', { replace: true })
   }
 
@@ -189,6 +190,11 @@ export default function Layout() {
           </div>
         </nav>
 
+        {/* Banner de email não verificado: aparece dentro do header
+            (acima do main) pra ficar visível sempre, sem ser parte
+            da página em si. Esconde sozinho quando email_verified_at
+            não é null no currentUser. */}
+        <VerifyEmailBanner />
       </header>
 
       <main className="flex-1">

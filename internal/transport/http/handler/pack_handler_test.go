@@ -4,6 +4,7 @@ import (
 	"context"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,7 @@ func setupPacks(
 	// Públicas
 	eng.GET("/packs", h.List)
 	eng.GET("/packs/:id", h.GetByID)
+	eng.GET("/assets/:id/packs", h.ByAssetID)
 	// Protegidas
 	eng.POST("/packs", withAuthUser(authedUserID), h.Create)
 	eng.PUT("/packs/:id", withAuthUser(authedUserID), h.Update)
@@ -258,6 +260,41 @@ func TestPackList_WithPage(t *testing.T) {
 // ============================================================
 // MyPacks
 // ============================================================
+
+func TestPackByAssetID_Success(t *testing.T) {
+	repo := &fakePackRepo{
+		ListByAssetIDFn: func(_ context.Context, assetID int64) ([]*domain.Pack, error) {
+			if assetID != 42 {
+				t.Errorf("assetID: want 42, got %d", assetID)
+			}
+			return []*domain.Pack{
+				{ID: 7, Title: "Medieval Pack"},
+				{ID: 8, Title: "Bundle Sci-fi"},
+			}, nil
+		},
+	}
+	eng := setupPacks(t, repo, nil, 0)
+	w := doJSON(t, eng, http.MethodGet, "/assets/42/packs", nil, "")
+	assertStatus(t, w, http.StatusOK)
+	if !strings.Contains(w.Body.String(), "Medieval Pack") {
+		t.Errorf("body deveria conter titulo do pack: %s", w.Body.String())
+	}
+}
+
+func TestPackByAssetID_EmptyArray(t *testing.T) {
+	repo := &fakePackRepo{
+		ListByAssetIDFn: func(_ context.Context, _ int64) ([]*domain.Pack, error) {
+			return []*domain.Pack{}, nil
+		},
+	}
+	eng := setupPacks(t, repo, nil, 0)
+	w := doJSON(t, eng, http.MethodGet, "/assets/99/packs", nil, "")
+	assertStatus(t, w, http.StatusOK)
+	// Garante array `[]` (não null) pra que front possa iterar direto.
+	if w.Body.String() != "[]" {
+		t.Errorf("array vazio esperado, got %s", w.Body.String())
+	}
+}
 
 func TestMyPacks_FilteredByJWT(t *testing.T) {
 	repo := &fakePackRepo{

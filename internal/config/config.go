@@ -31,6 +31,10 @@ type Config struct {
 	// Default "migrations" assume execução com CWD na raiz do projeto;
 	// em Docker, montamos a pasta em /app/migrations e setamos via env.
 	MigrationsDir string
+	// FrontendBaseURL é o domínio onde o frontend roda — usado pra
+	// montar links nos emails (verificação + reset). Em dev é o Vite
+	// (5173); em produção, o domínio público.
+	FrontendBaseURL string
 }
 
 // Load lê o arquivo .env (se existir) e popula a struct Config.
@@ -58,7 +62,8 @@ func Load() (*Config, error) {
 		JWTTTL:         time.Duration(ttlHours) * time.Hour,
 		UploadDir:      getEnv("UPLOAD_DIR", "uploads"),
 		AllowedOrigins: parseOrigins(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),
-		MigrationsDir:  getEnv("MIGRATIONS_DIR", "migrations"),
+		MigrationsDir:   getEnv("MIGRATIONS_DIR", "migrations"),
+		FrontendBaseURL: getEnv("FRONTEND_BASE_URL", "http://localhost:5173"),
 	}
 
 	// DATABASE_URL não tem default por design: rodar o servidor sem

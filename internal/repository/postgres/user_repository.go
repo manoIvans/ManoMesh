@@ -20,7 +20,7 @@ const pgUniqueViolation = "23505"
 // userColumns centraliza a lista de colunas usadas nos SELECT/RETURNING
 // pra que Scan e schema fiquem sincronizados. Adicionou coluna nova?
 // Atualizar aqui e o compilador te avisa nos Scans.
-const userColumns = "id, email, password_hash, username, display_name, bio, avatar_path, created_at, updated_at"
+const userColumns = "id, email, password_hash, username, display_name, bio, avatar_path, email_verified_at, created_at, updated_at"
 
 // UserRepository encapsula o acesso à tabela `users`. O handler nunca
 // fala com pgxpool diretamente — sempre via essa interface mental.
@@ -38,6 +38,7 @@ func scanUser(row pgx.Row, u *domain.User) error {
 	return row.Scan(
 		&u.ID, &u.Email, &u.PasswordHash,
 		&u.Username, &u.DisplayName, &u.Bio, &u.AvatarPath,
+		&u.EmailVerifiedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
 }
@@ -255,6 +256,51 @@ func (r *UserRepository) UpdateProfile(ctx context.Context, id int64, displayNam
 		return nil, fmt.Errorf("update user profile: %w", err)
 	}
 	return u, nil
+}
+
+// IsEmailVerified: lookup barato pro middleware RequireVerifiedEmail.
+// Single column scan; ErrUserNotFound se o id não existe (não deveria
+// acontecer dentro do middleware, mas defensivo).
+func (r *UserRepository) IsEmailVerified(ctx context.Context, id int64) (bool, error) {
+	const q = `SELECT email_verified_at FROM users WHERE id = $1`
+	var verifiedAt *string
+	if err := r.db.QueryRow(ctx, q, id).Scan(&verifiedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, domain.ErrUserNotFound
+		}
+		return false, fmt.Errorf("check email verified: %w", err)
+	}
+	return verifiedAt != nil, nil
+}
+
+// UpdatePassword troca a senha do user. Usado pelo fluxo de reset
+// (após o token ser consumido). NÃO toca em updated_at do user — a
+// trilha de mudança fica em password_reset_tokens.used_at. Caller já
+// validou que o token é válido antes de chamar.
+func (r *UserRepository) UpdatePassword(ctx context.Context, id int64, newHash string) error {
+	const q = `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`
+	tag, err := r.db.Exec(ctx, q, newHash, id)
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
+}
+
+// SetEmailVerified marca o user como verificado. Idempotente: marcar
+// um user já verificado faz UPDATE redundante mas não falha.
+func (r *UserRepository) SetEmailVerified(ctx context.Context, id int64) error {
+	const q = `UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()), updated_at = NOW() WHERE id = $1`
+	tag, err := r.db.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("set email verified: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
 }
 
 // SetAvatar grava o novo caminho e devolve o ANTERIOR (pra que o

@@ -26,8 +26,13 @@ type AuthState = {
   //   3. Falhou (rede off, 401 → logout automático).
   // O header lida com isso renderizando placeholder/skeleton.
   currentUser: User | null
-  login: (token: string) => void
-  logout: () => void
+  // login aceita o par (access+refresh) recém-emitido pelo backend.
+  // Grava ambos no tokenStorage; o api/client usa o access em todas
+  // as requests, o refresh é consumido só em refresh-on-401.
+  login: (accessToken: string, refreshToken: string) => void
+  // logout opcionalmente faz POST /logout no backend pra revogar o
+  // refresh. Falha não bloqueia — o cliente já apaga os dois localmente.
+  logout: () => Promise<void>
   // refreshUser força um GET /users/me. Útil depois de PATCH ou
   // upload de avatar — quem chamou o mutation pode invalidar a
   // cópia local de currentUser sem precisar fazer o fetch manual.
@@ -48,15 +53,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => tokenStorage.get())
   const [currentUser, setCurrentUser] = useState<User | null>(null)
 
-  const login = useCallback((newToken: string) => {
-    tokenStorage.set(newToken)
-    setToken(newToken)
-  }, [])
+  const login = useCallback(
+    (accessToken: string, refreshToken: string) => {
+      tokenStorage.setPair(accessToken, refreshToken)
+      setToken(accessToken)
+    },
+    [],
+  )
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    const refresh = tokenStorage.getRefresh()
+    // Tenta revogar no backend best-effort. Falha (rede, 4xx) não
+    // bloqueia o logout local — token vira lixo no DB do servidor
+    // mas access expira sozinho em 1h.
     tokenStorage.clear()
     setToken(null)
     setCurrentUser(null)
+    if (refresh) {
+      try {
+        await api.post('/api/v1/logout', { refresh_token: refresh })
+      } catch {
+        // silencioso — logout client-side já aconteceu
+      }
+    }
   }, [])
 
   // refreshUser: buscar /users/me. Stand-alone callback pra que outras

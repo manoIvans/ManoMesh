@@ -11,6 +11,7 @@ import (
 
 	"github.com/manoIvans/manomesh/internal/auth"
 	"github.com/manoIvans/manomesh/internal/config"
+	"github.com/manoIvans/manomesh/internal/mail"
 	"github.com/manoIvans/manomesh/internal/migrate"
 	"github.com/manoIvans/manomesh/internal/repository/postgres"
 	"github.com/manoIvans/manomesh/internal/storage"
@@ -62,11 +63,22 @@ func main() {
 	}
 	log.Printf("uploads em %q", cfg.UploadDir)
 
+	// 5.5) Mailer transacional. Default é StubMailer (loga no stdout)
+	// pra que dev tenha o link de verificação/reset disponível sem
+	// configurar provider externo. Plugar Resend/SMTP é trocar a impl
+	// — interface mail.Mailer.
+	mailer := mail.NewStubMailer()
+	log.Println("mailer: stub (logs no stdout)")
+
 	// 6) Roteador + servidor HTTP. Os timeouts são DEFENSIVOS, mas
 	// precisam acomodar uploads grandes (.glb pode chegar a ~100 MiB).
 	// Por isso usamos ReadHeaderTimeout curto (protege contra slowloris
 	// no handshake) e ReadTimeout longo (cobre upload em conexão lenta).
-	router := httptransport.NewRouter(db, tokenManager, fileStorage, cfg.AllowedOrigins)
+	router := httptransport.NewRouter(
+		db, tokenManager, fileStorage,
+		mailer, cfg.FrontendBaseURL,
+		cfg.AllowedOrigins,
+	)
 	srv := &http.Server{
 		Addr:              httptransport.Addr(cfg.AppPort),
 		Handler:           router,
